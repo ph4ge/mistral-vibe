@@ -215,3 +215,48 @@ async def test_switch_from_reasoning_to_non_reasoning_shows_correct_warning() ->
                             call_args = mock_mount.call_args[0]
                             assert isinstance(call_args[0], WarningMessage)
                             assert "History cleared: selected model doesn't support reasoning" in str(call_args[0]._message)
+
+
+@pytest.mark.asyncio
+async def test_switch_between_non_reasoning_models_does_not_clear() -> None:
+    """Test that switching between two non-reasoning models doesn't clear history."""
+    model_off, model_low, _ = _make_config_with_mixed_thinking()
+    # Create another non-reasoning model
+    model_off_2 = ModelConfig(
+        name="model-no-reasoning-2",
+        provider="mistral",
+        alias="no-thinking-2",
+        thinking="off",
+    )
+    config = build_test_vibe_config(
+        models=[model_off, model_off_2],
+        active_model="no-thinking",
+    )
+
+    app = build_test_vibe_app(config=config)
+
+    # Add some messages
+    app.agent_loop.messages.append(
+        LLMMessage(role=Role.user, content="Hello there")
+    )
+    app.agent_loop.messages.append(
+        LLMMessage(role=Role.assistant, content="Hi back!")
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+
+        with patch("vibe.cli.textual_ui.app.VibeConfig.save_updates"):
+            with patch.object(app, "_reload_config", new_callable=AsyncMock):
+                with patch.object(app, "_switch_to_input_app", new_callable=AsyncMock):
+                    with patch.object(app, "_clear_history", new_callable=AsyncMock) as mock_clear:
+                        with patch.object(
+                            app, "_mount_and_scroll", new_callable=AsyncMock
+                        ) as mock_mount:
+                            # Post message to switch between non-reasoning models
+                            app.post_message(ModelPickerApp.ModelSelected("no-thinking-2"))
+                            await pilot.pause(0.2)
+
+                            # Verify _clear_history was NOT called (both have thinking="off")
+                            mock_clear.assert_not_called()
+                            mock_mount.assert_not_called()
