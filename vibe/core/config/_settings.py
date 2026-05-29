@@ -23,13 +23,14 @@ from pydantic_settings import (
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
+from textual.theme import BUILTIN_THEMES
 import tomli_w
 
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.logger import logger
 from vibe.core.paths import GLOBAL_ENV_FILE, SESSION_LOG_DIR
-from vibe.core.prompts import load_system_prompt
+from vibe.core.prompts import UtilityPrompt, load_prompt, load_system_prompt
 from vibe.core.types import Backend
 from vibe.core.utils import get_server_url_from_api_base
 
@@ -491,10 +492,13 @@ DEFAULT_TTS_MODELS = [
     )
 ]
 
+DEFAULT_THEME = "ansi-dark"
+
 
 class VibeConfig(BaseSettings):
     active_model: str = DEFAULT_ACTIVE_MODEL
     vim_keybindings: bool = False
+    theme: str = DEFAULT_THEME
     disable_welcome_banner_animation: bool = False
     autocopy_to_clipboard: bool = True
     file_watcher_for_autocomplete: bool = False
@@ -508,6 +512,7 @@ class VibeConfig(BaseSettings):
     enable_telemetry: bool = True
     experiment_overrides: dict[str, str] = Field(default_factory=dict)
     system_prompt_id: str = "cli"
+    compaction_prompt_id: str = "compact"
     include_commit_signature: bool = True
     include_model_info: bool = True
     include_project_context: bool = True
@@ -520,8 +525,10 @@ class VibeConfig(BaseSettings):
 
     vibe_code_enabled: bool = Field(default=True, exclude=True)
     vibe_code_base_url: str = Field(default="https://api.mistral.ai", exclude=True)
+    vibe_code_sessions_base_url: str = Field(
+        default="https://chat.mistral.ai", exclude=True
+    )
     vibe_code_workflow_id: str = Field(default="__shared-nuage-workflow", exclude=True)
-    vibe_code_task_queue: str | None = Field(default="shared-vibe-nuage", exclude=True)
     vibe_code_api_key_env_var: str = Field(default="MISTRAL_API_KEY", exclude=True)
     vibe_code_project_name: str | None = Field(default=None, exclude=True)
 
@@ -532,7 +539,6 @@ class VibeConfig(BaseSettings):
     console_base_url: str = Field(default=DEFAULT_CONSOLE_BASE_URL, exclude=True)
 
     enable_experimental_hooks: bool = Field(default=False, exclude=True)
-    enable_experimental_browser_sign_in: bool = Field(default=False, exclude=True)
 
     providers: list[ProviderConfig] = Field(
         default_factory=lambda: list(DEFAULT_PROVIDERS)
@@ -629,10 +635,9 @@ class VibeConfig(BaseSettings):
     default_agent: str = Field(
         default=BuiltinAgentName.DEFAULT,
         description=(
-            "Agent profile to use when no --agent flag is passed in interactive "
-            "mode. Builtin: default, plan, accept-edits, auto-approve. "
-            "Ignored in programmatic mode (-p/--prompt), which falls back to "
-            "auto-approve when --agent is not provided."
+            "Agent profile to use when no --agent flag is passed. "
+            "Builtin: default, plan, accept-edits, auto-approve. "
+            "Applies in both interactive and programmatic (-p/--prompt) mode."
         ),
     )
     skill_paths: list[Path] = Field(
@@ -711,6 +716,14 @@ class VibeConfig(BaseSettings):
     @property
     def system_prompt(self) -> str:
         return load_system_prompt(self.system_prompt_id)
+
+    @property
+    def compaction_prompt(self) -> str:
+        return load_prompt(
+            self.compaction_prompt_id,
+            setting_name="compaction_prompt_id",
+            builtins={"compact": UtilityPrompt.COMPACT.path},
+        )
 
     def get_active_model(self) -> ModelConfig:
         for model in self.models:
@@ -849,6 +862,18 @@ class VibeConfig(BaseSettings):
             pass
         return self
 
+    @field_validator("theme", mode="before")
+    @classmethod
+    def _validate_theme(cls, v: Any) -> str:
+        if not isinstance(v, str) or not v:
+            return DEFAULT_THEME
+        if v not in BUILTIN_THEMES:
+            logger.warning(
+                "Unknown theme=%s in config; falling back to %s", v, DEFAULT_THEME
+            )
+            return DEFAULT_THEME
+        return v
+
     @field_validator("tool_paths", mode="before")
     @classmethod
     def _expand_tool_paths(cls, v: Any) -> list[Path]:
@@ -914,6 +939,11 @@ class VibeConfig(BaseSettings):
     @model_validator(mode="after")
     def _check_system_prompt(self) -> VibeConfig:
         _ = self.system_prompt
+        return self
+
+    @model_validator(mode="after")
+    def _check_compaction_prompt(self) -> VibeConfig:
+        _ = self.compaction_prompt
         return self
 
     def set_thinking(self, level: ThinkingLevel) -> None:
